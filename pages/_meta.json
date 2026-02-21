@@ -20,5 +20,10 @@
   },
   "api-reference": "API Reference",
   "frontend": "Frontend",
-  "comparison": "Comparison"
+  "comparison": "Comparison",
+  "-- Roadmap": {
+    "type": "separator",
+    "title": "Roadmap"
+  },
+  "oracle-roadmap": "Oracle Decentralization"
 }

@@ -32,7 +32,7 @@ Both systems solve the same trust problem: bounty funds are locked in a smart co
 | **Bot contributors** | First-class support for AI agents | Human-only |
 | **Complexity estimation** | AI-driven (1-10 scale) | Manual |
 | **QA criteria** | AI-generated acceptance criteria | Manual specification |
-| **Oracle model** | Go backend (local), Chainlink (roadmap) | Cardano oracle |
+| **Oracle model** | Go backend (local), [decentralization roadmap](/oracle-roadmap) | Centralized bot (Admin role) |
 | **Smart contract language** | Solidity | Plutus / Aiken |
 | **Toolchain** | Foundry (forge/anvil/cast) | Cardano CLI / Lucid |
 
@@ -88,7 +88,7 @@ Features planned for future releases:
 
 - **Multi-token support**: Accept ERC-20 tokens (USDC, DAI, etc.) in addition to native ETH.
 - **Real AI agents**: Replace stub agents with LLM-powered implementations (GPT-4, Claude, etc.) for PRD generation, code review, and quality assessment.
-- **Chainlink oracle**: Replace the centralized Go backend oracle with a decentralized Chainlink oracle network for production deployments.
+- **Decentralized oracle**: Replace the centralized Go backend oracle with decentralized verification. See the full [Oracle Decentralization Roadmap](/oracle-roadmap) for our phased approach (multi-sig → Chainlink Functions → zkTLS).
 - **Badges and achievements**: NFT-based badges for milestones (first bounty, 10 bounties, top contributor, etc.).
 
 ### Long-term

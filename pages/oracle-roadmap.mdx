@@ -1,0 +1,241 @@
+# Oracle Decentralization Roadmap
+
+The oracle is the most critical trust component in any bounty platform. It answers the question: **who tells the smart contract that a GitHub PR was merged?**
+
+This page analyzes our current oracle model, compares it with the competition, and lays out a concrete path toward trustless verification.
+
+## The Oracle Problem
+
+Every bounty platform needs to bridge off-chain events (GitHub) to on-chain state (smart contracts). Something must tell the blockchain "this PR was merged, release the funds." That something is the oracle.
+
+There are three layers of trust in any bounty oracle:
+
+| Layer | Question | What we trust |
+|---|---|---|
+| **1. Trigger** | "Something happened on GitHub, go check" | The relay that receives the webhook |
+| **2. Verification** | "Did the PR actually get merged?" | Whoever reads GitHub's API and reports the answer |
+| **3. Source of truth** | "Is GitHub telling the truth about its own data?" | GitHub Inc. |
+
+Layer 3 is irreducible — the data originates from GitHub. But Layers 1 and 2 are where we can make meaningful trust improvements.
+
+## Current State: Centralized Oracle
+
+Today, our Go backend **is** the oracle. It holds the deployer's private key and directly calls the smart contracts when GitHub webhooks arrive.
+
+```
+GitHub webhook → Go backend → Signs transaction → Smart contract accepts
+```
+
+The backend handles all three layers: it receives the trigger, decides the truth, and submits the result. If the backend is compromised, an attacker could fake a merge and drain bounties.
+
+```go
+// backend/internal/oracle/oracle.go
+func (o *Oracle) onPRMerged(payload *gh.WebhookPayload) {
+    // Our server both verifies the event AND signs the transaction
+    // This is the trust bottleneck
+    o.chain.AcceptSolutionOnChain(bountyID, solutionIndex)
+}
+```
+
+### What GitHoney Does
+
+[GitHoney](https://githoney.io), the Cardano-based bounty platform, uses the **exact same pattern**. Their smart contract requires an "Admin" signature on every `Merge` and `Close` transaction:
+
+```
+// GitHoney's Aiken validator (simplified)
+expect admin_signed(tx, datum.admin_payment_credential)
+```
+
+Their Admin is their bot server — a single centralized oracle. The [GitHoney documentation](https://docs.githoney.io) calls it "an oracle of the work done," but it's a single server with a signing key.
+
+**Every bounty platform in production today uses a centralized oracle.** GitHoney, Gitcoin bounties, Algora — all of them. The oracle problem is the unsolved challenge of the space.
+
+## Phase 1: Current Architecture (Centralized)
+
+**Status: Implemented**
+
+```
+GitHub ──webhook──→ Go Backend ──signs tx──→ BountyPlatform.sol
+                    (oracle)
+                    Holds private key
+                    Verifies event
+                    Submits result
+```
+
+**Trust model:** Users trust our server.
+
+**Risk:** If the server is compromised, an attacker can:
+- Fake a merge event → drain bounty funds
+- Refuse to process events → lock funds indefinitely (mitigated by future deadline feature)
+
+**Why it's OK for now:** GitHoney is on mainnet Cardano with real money using this same model. The risk is reputational — the platform operator has strong incentives to behave honestly. This is the pragmatic choice for an early-stage project.
+
+## Phase 2: Multi-Sig Oracle
+
+**Status: Planned (near-term)**
+
+Instead of one server signing transactions, require N-of-M independent servers to agree.
+
+```
+GitHub ──webhook──→ Server A ──signs──┐
+GitHub ──webhook──→ Server B ──signs──┼──→ Contract requires 2-of-3
+GitHub ──webhook──→ Server C ──signs──┘
+```
+
+**Implementation:**
+- Modify `BountyPlatform.sol` to accept threshold signatures (or use a multi-sig wallet as the oracle)
+- Run 2-3 independent backend instances (ideally operated by different parties)
+- Contract requires majority agreement before releasing funds
+
+**Trust model:** Users trust that a majority of operators are honest.
+
+**Advantages:**
+- No vendor dependency, works on any EVM chain
+- Meaningful trust improvement over single server
+- Relatively simple to implement
+
+**Limitations:**
+- Still a small, known set of operators
+- Coordination overhead
+- All servers read from the same GitHub API
+
+## Phase 3: Chainlink Functions
+
+**Status: Planned (medium-term)**
+
+[Chainlink Functions](https://docs.chain.link/chainlink-functions/getting-started) lets smart contracts execute JavaScript on a Decentralized Oracle Network (DON). Multiple independent Chainlink nodes each call GitHub's API and reach consensus on the result.
+
+```
+GitHub ──webhook──→ Thin Relay ──triggers──→ Chainlink Functions Router
+                    (no signing power)              ↓
+                                        DON Node 1: calls api.github.com ──┐
+                                        DON Node 2: calls api.github.com ──┼── consensus
+                                        DON Node 3: calls api.github.com ──┘
+                                                    ↓
+                                        BountyPlatform.sol ← fulfillRequest(result)
+```
+
+**How it works:**
+
+1. GitHub webhook hits our relay server (a thin proxy with no signing power)
+2. Relay calls the `FunctionsRouter` contract with the request parameters (repo, PR number)
+3. Multiple Chainlink DON nodes independently execute the verification JavaScript:
+
+```javascript
+// This runs on each Chainlink node independently
+const repo = args[0];   // e.g. "miguelemosreverte/playground-01"
+const prNum = args[1];  // e.g. "42"
+
+const response = await Functions.makeHttpRequest({
+  url: `https://api.github.com/repos/${repo}/pulls/${prNum}`,
+  headers: { "Accept": "application/vnd.github.v3+json" }
+});
+
+const merged = response.data.merged === true;
+const mergeCommit = response.data.merge_commit_sha || "";
+
+return Functions.encodeString(JSON.stringify({
+  merged,
+  mergeCommit
+}));
+```
+
+4. Nodes reach consensus on the result
+5. Result is delivered to the contract via a callback
+6. Contract releases (or withholds) funds based on the verified result
+
+**The critical difference:** Our relay server can only *trigger* checks — it cannot determine the outcome. Even if compromised, an attacker can only request verification of PRs that aren't actually merged, and Chainlink will correctly return `false`.
+
+**Trust model:** Users trust Chainlink's DON network + GitHub's API.
+
+**Advantages:**
+- Decentralized verification (industry-standard oracle network)
+- Our server has no power over outcomes
+- Battle-tested infrastructure
+- Strong brand credibility ("powered by Chainlink")
+
+**Limitations:**
+- Requires LINK tokens (~$0.05-0.50 per request)
+- Only available on [supported chains](https://docs.chain.link/chainlink-functions/supported-networks)
+- 1-5 minute latency (vs. instant with centralized oracle)
+- All nodes query the same GitHub API (centralized data source)
+- Vendor dependency
+
+**Cost estimate:** At $0.10 per Chainlink request and ~100 bounty events/month, that's ~$10/month in LINK — negligible.
+
+## Phase 4: zkTLS Verification
+
+**Status: Research (long-term)**
+
+[zkTLS](https://tlsnotary.org) (also called TLS Notary, Web Proofs) is the most exciting development in the oracle space. It provides **cryptographic proof** that a specific HTTPS response came from a specific server, verified on-chain.
+
+```
+GitHub ──webhook──→ Relay ──triggers──→ zkTLS Prover
+                                             ↓
+                                    Establishes TLS session with api.github.com
+                                    Gets response: { "merged": true }
+                                    Generates ZK proof that:
+                                      - The response came from GitHub's TLS certificate
+                                      - The response contained "merged": true
+                                             ↓
+                                    BountyPlatform.sol ← verifyProof(proof)
+                                      Verifies the cryptographic proof on-chain
+                                      No oracle needed — math proves the truth
+```
+
+**How it works:**
+
+1. A prover establishes a TLS connection to `api.github.com`
+2. Using a multi-party computation protocol, the prover can demonstrate that a specific response was received without revealing the full session
+3. A zero-knowledge proof is generated that proves: "GitHub's server, identified by its TLS certificate, returned `merged: true` for PR #42"
+4. This proof is verified on-chain by the smart contract
+5. **No oracle needed** — the proof is mathematical, not based on trust
+
+**Trust model:** Users trust GitHub's TLS certificate (i.e., GitHub itself). No intermediary of any kind.
+
+**Why this matters:** This completely eliminates Layer 2 trust. You don't trust our server, you don't trust Chainlink, you don't trust anyone except GitHub — which you already have to trust since they host the code.
+
+**Current state of the technology:**
+- [TLSNotary](https://tlsnotary.org) is the leading implementation, with [zkTLS Day at Devconnect 2025](https://tlsnotary.org/zktls-day/)
+- [Sophon launched](https://www.globenewswire.com/news-release/2025/05/21/3086103/0/en/Sophon-Unveils-zkTLS-Based-Social-Oracle-to-Integrate-Private-Web2-Data-Onchain.html) a zkTLS-based social oracle in production (2025)
+- [the3cloud/zktls](https://github.com/the3cloud/zktls) provides "Trustless access web2 from web3. Provable TLS for all chains."
+- On-chain proof verification gas costs are still high but decreasing rapidly
+- The [Stanford Blockchain Review](https://review.stanfordblockchain.xyz/p/74-cryptography-research-spotlight) has covered zkTLS and the DECO protocol extensively
+
+**Advantages:**
+- Truly trustless — no oracle intermediary at all
+- Strongest possible security guarantee
+- Major differentiator ("first bounty platform with trustless GitHub verification")
+- No ongoing oracle costs
+
+**Limitations:**
+- Tooling is still maturing
+- High gas costs for on-chain proof verification (improving)
+- Proof generation latency (seconds to minutes)
+- Requires careful implementation to avoid side-channel attacks
+
+## Comparison Summary
+
+| Approach | Trust Model | Decentralization | Latency | Cost | Complexity |
+|---|---|---|---|---|---|
+| **Centralized oracle** (current) | Trust our server | None | Instant | Gas only | Low |
+| **Multi-sig oracle** | Trust majority of N operators | Partial | Seconds | Gas × N | Medium |
+| **Chainlink Functions** | Trust Chainlink DON + GitHub | High | 1-5 min | LINK tokens | Medium |
+| **zkTLS** | Trust GitHub only (math verifies the rest) | Maximum | Seconds-minutes | Gas for proof verification | High |
+
+## Competitive Positioning
+
+If we implement even Phase 3 (Chainlink Functions), we become **the first bounty platform with decentralized oracle verification**. GitHoney, Gitcoin bounties, and every other player in this space uses a centralized oracle.
+
+If we reach Phase 4 (zkTLS), we can make a genuinely novel claim: **"the first bounty platform where you don't have to trust anyone except GitHub itself."** That's a real differentiator — not marketing fluff, but a cryptographic guarantee that no competitor offers.
+
+## Implementation Priority
+
+```
+✅ Phase 1: Centralized Oracle       — Shipped. Works. Ship the product.
+🔲 Phase 2: Multi-Sig Oracle         — Low effort, meaningful improvement.
+🔲 Phase 3: Chainlink Functions      — When going to mainnet. Buys credibility.
+🔲 Phase 4: zkTLS Verification       — When tooling matures. The endgame.
+```
+
+The right strategy is to ship with what we have, add Chainlink when we need credibility for mainnet, and keep a close eye on zkTLS for the long-term competitive moat.
