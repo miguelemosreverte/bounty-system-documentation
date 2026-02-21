@@ -1,0 +1,187 @@
+# Getting Started
+
+Get GitBusters running locally in under 10 minutes.
+
+## Prerequisites
+
+Before you begin, make sure you have the following installed:
+
+| Tool | Version | Purpose |
+|---|---|---|
+| **Node.js** | >= 18 | Frontend (Next.js) |
+| **Go** | >= 1.21 | Backend server |
+| **Foundry** | latest | Smart contract toolchain (forge, anvil, cast) |
+| **GitHub CLI** (`gh`) | latest | Demo and E2E scripts |
+| **jq** | latest | JSON processing in deploy scripts |
+| **Python 3** | >= 3.8 | Wei-to-ETH conversion in seed script |
+
+### Installing Foundry
+
+If you do not have Foundry installed:
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
+
+This installs `forge` (compiler/test runner), `anvil` (local blockchain), and `cast` (CLI for interacting with contracts).
+
+## Installation
+
+1. **Clone the repository:**
+
+```bash
+git clone https://github.com/miguelemosreverte/bounty-platform.git
+cd bounty-platform
+```
+
+2. **Install all dependencies:**
+
+```bash
+make install
+```
+
+This single command:
+- Installs Foundry contract dependencies (`forge install`)
+- Downloads Go modules (`go mod download`)
+- Installs npm packages for the frontend (`npm install`)
+- Installs `smee-client` globally (for webhook forwarding)
+
+3. **Set up environment variables:**
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and fill in your GitHub credentials:
+
+```env
+# Required for webhook integration
+GITHUB_WEBHOOK_SECRET=your-secret-here
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+GITHUB_TEST_REPO=your-org/your-repo
+
+# Required for webhook forwarding in development
+SMEE_URL=https://smee.io/your-channel-id
+```
+
+Get a smee URL by visiting [https://smee.io/new](https://smee.io/new).
+
+## Running the Dev Environment
+
+### Option A: All-in-one (recommended)
+
+```bash
+make dev-all
+```
+
+This starts everything in the background:
+- **Anvil** (local blockchain) on `http://localhost:8545`
+- **Deploys contracts** and updates `.env` with addresses
+- **Go backend** on `http://localhost:8080`
+- **Smee** webhook forwarding (if `SMEE_URL` is configured)
+- **Next.js frontend** on `http://localhost:3000`
+
+Logs are written to `/tmp/`:
+- `/tmp/anvil.log`
+- `/tmp/bounty-backend.log`
+- `/tmp/bounty-frontend.log`
+- `/tmp/smee.log`
+
+To stop all services:
+
+```bash
+make stop
+```
+
+### Option B: Manual (separate terminals)
+
+Run each in its own terminal for easier debugging:
+
+```bash
+# Terminal 1: Local blockchain
+make anvil
+
+# Terminal 2: Deploy contracts (run once after Anvil starts)
+make deploy
+
+# Terminal 3: Webhook forwarding
+make smee
+
+# Terminal 4: Go backend
+make backend-run
+
+# Terminal 5: Next.js frontend
+make frontend-dev
+```
+
+## Seeding Demo Data
+
+To populate the dashboard with sample bounties and leaderboard entries:
+
+```bash
+make seed
+```
+
+This creates 7 bounties (4 completed, 3 open), submits solutions, records payouts, and updates leaderboard scores. After seeding, refresh `http://localhost:3000` to see the data.
+
+## Your First Bounty Walkthrough
+
+Once the dev environment is running:
+
+1. **Create a GitHub issue** in your test repo with a description of what needs to be built.
+
+2. **Add the `bounty` label** to the issue. The webhook fires, and the oracle:
+   - Generates a PRD and QA criteria
+   - Estimates complexity and bounty amount
+   - Creates an on-chain bounty with ETH escrow
+   - Posts a comment on the issue with all the details
+
+3. **Open a pull request** that references the issue. Include in the PR body:
+   ```
+   Fixes #<issue-number>
+
+   <!-- bounty-wallet: 0xYourWalletAddressHere -->
+   ```
+   The oracle registers the solution on-chain and comments on the PR.
+
+4. **Merge the PR.** The oracle:
+   - Runs the reviewer agent
+   - Accepts the solution on-chain
+   - Releases escrow funds to the contributor's wallet
+   - Updates the leaderboard
+   - Posts a payout confirmation comment
+
+You can also run the full lifecycle automatically:
+
+```bash
+make demo
+```
+
+This script creates a real GitHub issue, labels it, opens a PR, merges it, and verifies the payout -- all against your configured test repo.
+
+## Verifying Everything Works
+
+Check the backend health endpoint:
+
+```bash
+curl http://localhost:8080/api/health
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok",
+  "chainId": "31337",
+  "oracle": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+}
+```
+
+Check deployed contract addresses:
+
+```bash
+curl http://localhost:8080/api/addresses
+```
+
+Browse the frontend at [http://localhost:3000](http://localhost:3000).

@@ -1,0 +1,301 @@
+# API Reference
+
+The Go backend exposes a REST API on port `8080` (configurable via the `PORT` environment variable). All endpoints are prefixed with `/api`.
+
+The API is read-only for external consumers -- all write operations happen through the oracle processing GitHub webhooks.
+
+**Base URL:** `http://localhost:8080`
+
+---
+
+## GET /api/health
+
+Health check endpoint. Returns the backend status, connected chain ID, and oracle address.
+
+**Request:**
+```bash
+curl http://localhost:8080/api/health
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "chainId": "31337",
+  "oracle": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | Always `"ok"` if the server is running |
+| `chainId` | string | The connected blockchain's chain ID (31337 = Anvil local) |
+| `oracle` | string | The oracle's Ethereum address (derived from `ORACLE_PRIVATE_KEY`) |
+
+---
+
+## GET /api/addresses
+
+Returns the deployed contract addresses.
+
+**Request:**
+```bash
+curl http://localhost:8080/api/addresses
+```
+
+**Response:**
+```json
+{
+  "bountyPlatform": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "leaderboard": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+  "oracle": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `bountyPlatform` | string | Address of the BountyPlatform contract |
+| `leaderboard` | string | Address of the Leaderboard contract |
+| `oracle` | string | Address of the oracle account |
+
+---
+
+## GET /api/bounties
+
+Returns all bounties from the blockchain. Reads directly from the smart contract by iterating from ID 1 to `nextBountyId`.
+
+**Request:**
+```bash
+curl http://localhost:8080/api/bounties
+```
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "maintainer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "repoOwner": "miguelemosreverte",
+    "repoName": "playground-01",
+    "issueNumber": 1,
+    "prdHash": "prd_a1b2c3d4e5f6",
+    "qaHash": "qa_f1e2d3c4b5a6",
+    "amount": "0",
+    "estimatedComplexity": 3,
+    "status": "closed",
+    "solutionCount": 1,
+    "createdAt": 1700000000,
+    "closedAt": 1700000100
+  },
+  {
+    "id": 2,
+    "maintainer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "repoOwner": "miguelemosreverte",
+    "repoName": "playground-01",
+    "issueNumber": 5,
+    "prdHash": "prd_c3d4e5f6g7h8",
+    "qaHash": "qa_h8g7f6e5d4c3",
+    "amount": "40000000000000000",
+    "estimatedComplexity": 4,
+    "status": "open",
+    "solutionCount": 0,
+    "createdAt": 1700000200,
+    "closedAt": 0
+  }
+]
+```
+
+**Bounty object fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | number | Unique bounty ID (auto-incrementing, starts at 1) |
+| `maintainer` | string | Ethereum address of the bounty creator |
+| `repoOwner` | string | GitHub repository owner |
+| `repoName` | string | GitHub repository name |
+| `issueNumber` | number | GitHub issue number |
+| `prdHash` | string | Hash of the generated PRD document |
+| `qaHash` | string | Hash of the QA criteria |
+| `amount` | string | Escrowed amount in wei (as string to avoid precision loss). `"0"` means paid out or cancelled. |
+| `estimatedComplexity` | number | Complexity score from 1 to 10 |
+| `status` | string | `"open"`, `"closed"`, or `"cancelled"` |
+| `solutionCount` | number | Number of solutions submitted for this bounty |
+| `createdAt` | number | Unix timestamp of bounty creation |
+| `closedAt` | number | Unix timestamp of closure (0 if still open) |
+
+Returns an empty array `[]` if no bounties exist.
+
+---
+
+## GET /api/bounties/:id
+
+Returns a single bounty by ID.
+
+**Request:**
+```bash
+curl http://localhost:8080/api/bounties/1
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "maintainer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "repoOwner": "miguelemosreverte",
+  "repoName": "playground-01",
+  "issueNumber": 1,
+  "prdHash": "prd_a1b2c3d4e5f6",
+  "qaHash": "qa_f1e2d3c4b5a6",
+  "amount": "0",
+  "estimatedComplexity": 3,
+  "status": "closed",
+  "solutionCount": 1,
+  "createdAt": 1700000000,
+  "closedAt": 1700000100
+}
+```
+
+**Error responses:**
+
+- `400 Bad Request` -- Invalid ID format:
+  ```json
+  { "error": "invalid id" }
+  ```
+- `500 Internal Server Error` -- Contract read failure:
+  ```json
+  { "error": "execution reverted" }
+  ```
+
+---
+
+## GET /api/bounties/:id/solutions
+
+Returns all solutions submitted for a given bounty.
+
+**Request:**
+```bash
+curl http://localhost:8080/api/bounties/1/solutions
+```
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "bountyId": 1,
+    "contributor": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "prNumber": 10,
+    "commitHash": "abc123def4567890abcdef",
+    "score": 0,
+    "status": "accepted",
+    "submittedAt": 1700000050
+  }
+]
+```
+
+**Solution object fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | number | Unique solution ID |
+| `bountyId` | number | The bounty this solution belongs to |
+| `contributor` | string | Ethereum address of the contributor |
+| `prNumber` | number | GitHub pull request number |
+| `commitHash` | string | Git commit SHA at time of submission |
+| `score` | number | Review score (0-100, 0 means not yet reviewed) |
+| `status` | string | `"submitted"`, `"accepted"`, or `"rejected"` |
+| `submittedAt` | number | Unix timestamp of solution submission |
+
+Returns an empty array `[]` if no solutions exist for the bounty.
+
+---
+
+## GET /api/leaderboard
+
+Returns the leaderboard with all participants who have completed at least one bounty or have non-zero reputation.
+
+The endpoint scans all bounties and their solutions to collect unique addresses, then queries the Leaderboard contract for each.
+
+**Request:**
+```bash
+curl http://localhost:8080/api/leaderboard
+```
+
+**Response:**
+```json
+[
+  {
+    "address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "actorType": "contributor",
+    "totalBounties": 2,
+    "totalPayout": "170000000000000000",
+    "reputation": 20
+  },
+  {
+    "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "actorType": "maintainer",
+    "totalBounties": 4,
+    "totalPayout": "320000000000000000",
+    "reputation": 20
+  }
+]
+```
+
+**Leaderboard entry fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `address` | string | Ethereum address of the participant |
+| `actorType` | string | `"contributor"` or `"maintainer"` |
+| `totalBounties` | number | Number of completed bounties |
+| `totalPayout` | string | Cumulative payout in wei (as string) |
+| `reputation` | number | Reputation score (contributors: +10 per bounty, maintainers: +5 per bounty) |
+
+Returns an empty array `[]` if no participants have scores.
+
+---
+
+## POST /api/webhook/github
+
+Receives GitHub webhook events. This endpoint is not meant to be called directly -- it is the target for GitHub webhook deliveries.
+
+**Headers:**
+| Header | Description |
+|---|---|
+| `X-GitHub-Event` | Event type (e.g., `issues`, `pull_request`) |
+| `X-Hub-Signature-256` | HMAC-SHA256 signature of the request body |
+| `Content-Type` | `application/json` |
+
+**Handled events:**
+
+| Event | Action | Behavior |
+|---|---|---|
+| `issues` | `labeled` | Creates bounty if label is "bounty" |
+| `pull_request` | `opened` | Registers solution if PR references a bounty issue |
+| `pull_request` | `closed` (merged=true) | Accepts solution and triggers payout |
+
+**Response:** `200 OK` with body `ok`
+
+**Error responses:**
+- `400 Bad Request` -- Missing event type or malformed payload
+- `401 Unauthorized` -- Invalid HMAC signature (when `GITHUB_WEBHOOK_SECRET` is configured)
+
+---
+
+## CORS Configuration
+
+The API allows cross-origin requests from:
+- `http://localhost:3000`
+- `http://127.0.0.1:3000`
+
+Allowed methods: `GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`
+
+This is configured in the chi router middleware:
+```go
+r.Use(cors.Handler(cors.Options{
+    AllowedOrigins:   []string{"http://localhost:3000", "http://127.0.0.1:3000"},
+    AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+    AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+    AllowCredentials: true,
+}))
+```

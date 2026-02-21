@@ -1,0 +1,270 @@
+# Frontend
+
+The GitBusters frontend is a Next.js 14 application with a dark theme, emerald/green accent colors, and Web3 wallet connectivity.
+
+## Tech Stack
+
+| Package | Purpose |
+|---|---|
+| **Next.js 14** | React framework with App Router |
+| **TypeScript** | Type safety |
+| **Tailwind CSS** | Utility-first styling |
+| **RainbowKit** | Wallet connection modal |
+| **wagmi v2** | Ethereum hooks and chain interaction |
+| **Geist** | Font family (sans + mono) |
+
+## Pages
+
+### Dashboard (`/`)
+
+The landing page displays:
+
+- **Hero section** -- GitBusters branding with mascot image, "Live on Chain" indicator, and tagline
+- **Stats row** -- Three cards showing Total Bounties, Open Bounties, and Total ETH Paid
+- **System Status** -- Backend health, chain ID, and oracle address (when backend is reachable)
+- **Recent Bounties** -- The 5 most recent bounties with links to details
+
+Data is fetched client-side from `GET /api/bounties` and `GET /api/health` on page load.
+
+### Bounties List (`/bounties`)
+
+A filterable grid of all bounties with four filter tabs:
+
+- **All** -- Every bounty
+- **Open** -- Only active bounties with escrowed funds
+- **Closed** -- Completed bounties (paid out)
+- **Cancelled** -- Cancelled bounties (refunded)
+
+Each bounty is rendered as a card showing:
+- Bounty ID and status badge
+- Repository and issue number
+- ETH amount
+- Complexity bar (green for 1-3, yellow for 4-6, red for 7-10)
+- Solution count
+- Maintainer address (truncated)
+
+### Bounty Detail (`/bounties/[id]`)
+
+Detailed view of a single bounty with two columns:
+
+**Left column -- Details:**
+- Amount in ETH
+- Complexity bar with percentage
+- Maintainer address
+- Solution count
+- PRD hash
+
+**Right column -- How to Claim:**
+A 4-step guide:
+1. Open a PR that fixes the issue
+2. Include `Fixes #N` in the PR body
+3. Include `<!-- bounty-wallet: 0x... -->` for wallet address
+4. Once merged, the bounty is paid automatically
+
+**Below -- Solutions:**
+A list of all submitted solutions showing:
+- Solution ID and status badge
+- PR number
+- Review score (if scored)
+- Contributor address (truncated)
+- Commit hash (truncated)
+
+### Leaderboard (`/leaderboard`)
+
+A ranked table of all participants, sorted by reputation. Displays:
+
+- **Rank** -- Medal icons for top 3 (gold, silver, bronze), numbers for the rest
+- **Address** -- Truncated Ethereum address
+- **Type** -- "contributor" or "maintainer" with colored badges
+- **Bounties** -- Number of completed bounties
+- **Total Payout** -- Cumulative ETH earned
+- **Reputation** -- Score with up/down arrow and color (green for positive, red for negative)
+
+## Components
+
+### BountyCard
+
+Displays a bounty as a clickable card with hover effects. Links to `/bounties/[id]`.
+
+**Props:**
+```typescript
+interface BountyCardProps {
+  bounty: Bounty;
+}
+```
+
+Features:
+- Glassmorphism styling (`glass` CSS class)
+- Complexity progress bar with color coding
+- Wei-to-ETH conversion for display
+- Hover state reveals "View details" arrow
+
+### LeaderboardTable
+
+Renders the leaderboard as an HTML table with striped rows.
+
+**Props:**
+```typescript
+interface LeaderboardTableProps {
+  entries: LeaderboardEntry[];
+}
+```
+
+Shows an empty state with trophy icon when no entries exist.
+
+### StatusBadge
+
+A reusable badge component for bounty and solution statuses.
+
+**Props:**
+```typescript
+interface StatusBadgeProps {
+  status: string;    // "open" | "closed" | "cancelled" | "submitted" | "accepted" | "rejected"
+  size?: 'sm' | 'md';
+}
+```
+
+Color mapping:
+- **open / accepted**: Emerald (green)
+- **closed**: Blue
+- **cancelled / rejected**: Red
+- **submitted**: Amber (yellow)
+
+### Navbar
+
+Sticky top navigation with:
+- GitBusters logo + mascot image
+- Navigation links: Dashboard, Bounties, Leaderboard
+- RainbowKit ConnectButton (wallet connection)
+- Responsive mobile hamburger menu
+
+### Skeleton
+
+Loading skeleton component with shimmer animation. Supports `card` and `table-row` variants.
+
+## Web3 Integration
+
+### Provider Setup
+
+Web3 providers (RainbowKit + wagmi) are loaded lazily to prevent hydration mismatches between server and client rendering:
+
+```typescript
+// Web3Provider.tsx -- lazy loads the inner provider
+export function Web3Provider({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    import('./Web3ProviderInner').then(mod => {
+      CachedInner = mod.Web3ProviderInner;
+      setReady(true);
+    });
+  }, []);
+
+  // Before providers load, render children without Web3 context
+  if (!ready || !CachedInner) {
+    return (
+      <Web3ReadyContext.Provider value={false}>
+        {children}
+      </Web3ReadyContext.Provider>
+    );
+  }
+
+  return (
+    <Web3ReadyContext.Provider value={true}>
+      <CachedInner>{children}</CachedInner>
+    </Web3ReadyContext.Provider>
+  );
+}
+```
+
+Components can check if Web3 is ready:
+```typescript
+const web3Ready = useWeb3Ready();
+// Only render wallet-dependent UI when ready
+```
+
+### Wallet Connection
+
+The Navbar renders RainbowKit's `ConnectButton` which supports:
+- MetaMask, WalletConnect, Coinbase Wallet, and other popular wallets
+- Chain switching
+- Account display with ENS resolution
+
+## API Client
+
+The frontend communicates with the backend through a typed API client:
+
+```typescript
+// lib/api.ts
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+
+export const api = {
+  getBounties:    () => fetchAPI<Bounty[]>('/api/bounties'),
+  getBounty:      (id: number) => fetchAPI<Bounty>(`/api/bounties/${id}`),
+  getSolutions:   (bountyId: number) => fetchAPI<Solution[]>(`/api/bounties/${bountyId}/solutions`),
+  getLeaderboard: () => fetchAPI<LeaderboardEntry[]>('/api/leaderboard'),
+  getHealth:      () => fetchAPI<{ status: string; chainId: string; oracle: string }>('/api/health'),
+  getAddresses:   () => fetchAPI<{ bountyPlatform: string; leaderboard: string; oracle: string }>('/api/addresses'),
+};
+```
+
+All API calls use `fetch` with `cache: 'no-store'` to ensure fresh data.
+
+### TypeScript Interfaces
+
+```typescript
+export interface Bounty {
+  id: number;
+  maintainer: string;
+  repoOwner: string;
+  repoName: string;
+  issueNumber: number;
+  prdHash: string;
+  qaHash: string;
+  amount: string;            // Wei as string
+  estimatedComplexity: number;
+  status: string;
+  solutionCount: number;
+  createdAt: number;
+  closedAt: number;
+}
+
+export interface Solution {
+  id: number;
+  bountyId: number;
+  contributor: string;
+  prNumber: number;
+  commitHash: string;
+  score: number;
+  status: string;
+  submittedAt: number;
+}
+
+export interface LeaderboardEntry {
+  address: string;
+  actorType: string;
+  totalBounties: number;
+  totalPayout: string;       // Wei as string
+  reputation: number;
+}
+```
+
+## Styling
+
+The frontend uses a consistent dark theme with glassmorphism effects:
+
+- **Background**: Near-black (`#050a09`)
+- **Glass cards**: Semi-transparent white borders with backdrop blur
+- **Accent color**: Emerald green (`#10b981` / `#34d399`)
+- **Fonts**: Geist Sans for body text, Geist Mono for addresses and code
+- **Animations**: Smooth transitions on hover, pulse dots for live indicators, shimmer for loading skeletons
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | Backend API URL | `http://localhost:8080` |
+| `NEXT_PUBLIC_BOUNTY_CONTRACT` | BountyPlatform contract address | (set by deploy script) |
+| `NEXT_PUBLIC_LEADERBOARD_CONTRACT` | Leaderboard contract address | (set by deploy script) |
+
+These are automatically written to `frontend/.env.local` by the `deploy-contracts.sh` script.

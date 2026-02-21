@@ -1,0 +1,24 @@
+{
+  "index": "Introduction",
+  "-- Getting Started": {
+    "type": "separator",
+    "title": "Getting Started"
+  },
+  "getting-started": "Quick Start",
+  "development": "Development Guide",
+  "-- Architecture": {
+    "type": "separator",
+    "title": "Architecture"
+  },
+  "architecture": "System Overview",
+  "smart-contracts": "Smart Contracts",
+  "bounty-lifecycle": "Bounty Lifecycle",
+  "github-integration": "GitHub Integration",
+  "-- Reference": {
+    "type": "separator",
+    "title": "Reference"
+  },
+  "api-reference": "API Reference",
+  "frontend": "Frontend",
+  "comparison": "Comparison"
+}

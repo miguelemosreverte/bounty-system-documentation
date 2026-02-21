@@ -1,0 +1,86 @@
+# GitBusters
+
+**Blockchain-powered bounty system for open source development. Anyone -- human or bot -- can contribute and get paid in ETH.**
+
+---
+
+## What is GitBusters?
+
+GitBusters is an end-to-end platform that bridges GitHub workflows with blockchain-based escrow payments. Maintainers post bounties on GitHub issues by adding a label, and the system automatically:
+
+- Creates an **on-chain bounty** funded with ETH
+- Generates a **PRD** (Product Requirements Document) and **QA criteria** using AI agents
+- **Estimates complexity** and suggests a bounty amount
+- Tracks **contributor solutions** as pull requests
+- **Pays out automatically** when a PR is merged
+
+The entire flow -- from issue creation to payout -- is trustless and transparent, powered by Solidity smart contracts on any EVM-compatible chain.
+
+## Key Features
+
+- **On-chain escrow** -- Bounty funds are locked in a smart contract until a solution is accepted. No middleman.
+- **GitHub-native workflow** -- Label an issue with `bounty` and everything happens automatically via webhooks.
+- **AI-powered analysis** -- Four agent plugins (PRD, Estimator, QA, Reviewer) analyze issues and evaluate solutions.
+- **Multiple competing solutions** -- Any number of contributors can submit PRs. The best one gets paid when merged.
+- **Automatic payout** -- When a maintainer merges a PR, the escrow releases funds to the contributor's wallet.
+- **Reputation system** -- The Leaderboard contract tracks completed bounties, payouts, and reputation scores for all participants.
+- **Human or bot contributors** -- Both humans and automated agents can claim and solve bounties.
+- **Web3 dashboard** -- A Next.js frontend with RainbowKit wallet connection for browsing bounties and leaderboards.
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Smart Contracts** | Solidity 0.8.20, Foundry (forge/anvil/cast) |
+| **Backend** | Go, go-ethereum, chi router, godotenv |
+| **Frontend** | Next.js 14, TypeScript, Tailwind CSS, wagmi v2, RainbowKit |
+| **Blockchain** | Anvil (local dev), compatible with any EVM chain (Polygon, Ethereum, etc.) |
+| **Oracle** | Go backend (local dev), Chainlink (production roadmap) |
+
+## Quick Links
+
+- [Getting Started](/getting-started) -- Install and run the platform in minutes
+- [Architecture Overview](/architecture) -- Understand how all the pieces fit together
+- [Smart Contracts](/smart-contracts) -- Deep dive into BountyPlatform.sol and Leaderboard.sol
+- [Bounty Lifecycle](/bounty-lifecycle) -- Step-by-step walkthrough of the complete flow
+- [GitHub Integration](/github-integration) -- Webhook setup and event handling
+- [API Reference](/api-reference) -- All REST endpoints with request/response examples
+- [Frontend](/frontend) -- The Next.js dashboard and Web3 integration
+- [Development Guide](/development) -- Local setup, testing, and seeding
+- [Comparison](/comparison) -- How GitBusters compares to other bounty systems
+
+## Project Structure
+
+```
+bounty-platform/
+  contracts/           # Solidity smart contracts (Foundry)
+    src/
+      BountyPlatform.sol    # Main escrow contract
+      Leaderboard.sol       # Reputation tracking
+    script/
+      Deploy.s.sol          # Deployment script
+  backend/             # Go server
+    cmd/server/             # Entry point
+    internal/
+      api/                  # REST handlers + router
+      blockchain/           # Ethereum client + contract bindings
+      config/               # Environment configuration
+      github/               # Webhook handler + GitHub client
+      oracle/               # Oracle bridge (GitHub -> on-chain)
+      agents/               # AI agent interfaces + stubs
+      models/               # Shared data types
+    pkg/bindings/           # Generated Go bindings from ABIs
+  frontend/            # Next.js dashboard
+    src/
+      app/                  # Pages (dashboard, bounties, leaderboard)
+      components/           # UI components (BountyCard, LeaderboardTable, etc.)
+      lib/                  # API client
+      providers/            # Web3 provider (RainbowKit + wagmi)
+  scripts/             # Automation scripts
+    deploy-contracts.sh     # Deploy + update .env
+    seed.sh                 # Seed demo data
+    demo.sh                 # Full lifecycle demo
+    test-e2e.sh             # End-to-end tests
+  Makefile             # All build/run targets
+  .env.example         # Environment template
+```

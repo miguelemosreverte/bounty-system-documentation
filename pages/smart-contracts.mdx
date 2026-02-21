@@ -1,0 +1,354 @@
+# Smart Contracts
+
+GitBusters uses two Solidity contracts deployed via Foundry. Both are compiled with Solidity `^0.8.20` and use `via_ir` optimization.
+
+## BountyPlatform.sol
+
+The core escrow contract that manages the full bounty lifecycle.
+
+**Source:** `contracts/src/BountyPlatform.sol`
+
+### State
+
+#### Enums
+
+```solidity
+enum BountyStatus { Open, Closed, Cancelled }
+enum SolutionStatus { Submitted, Accepted, Rejected }
+```
+
+#### Bounty Struct
+
+```solidity
+struct Bounty {
+    uint256 id;
+    address maintainer;          // Address that funded the bounty
+    string repoOwner;            // GitHub org/user (e.g., "miguelemosreverte")
+    string repoName;             // Repository name (e.g., "playground-01")
+    uint256 issueNumber;         // GitHub issue number
+    string prdHash;              // Hash of the generated PRD document
+    string qaHash;               // Hash of the QA criteria
+    uint256 amount;              // Escrowed ETH in wei
+    uint256 estimatedComplexity; // 1-10 scale
+    BountyStatus status;         // Open | Closed | Cancelled
+    uint256 createdAt;           // Block timestamp
+    uint256 closedAt;            // Block timestamp (0 if still open)
+}
+```
+
+#### Solution Struct
+
+```solidity
+struct Solution {
+    uint256 id;
+    uint256 bountyId;
+    address contributor;    // Wallet to receive payout
+    uint256 prNumber;       // GitHub PR number
+    string commitHash;      // Git commit SHA
+    uint8 score;            // Review score (0-100)
+    SolutionStatus status;  // Submitted | Accepted | Rejected
+    uint256 submittedAt;    // Block timestamp
+}
+```
+
+#### Storage
+
+```solidity
+address public owner;                              // Oracle address
+uint256 public nextBountyId;                       // Auto-incrementing counter
+uint256 public nextSolutionId;                     // Auto-incrementing counter
+mapping(uint256 => Bounty) public bounties;        // bountyId -> Bounty
+mapping(uint256 => Solution[]) internal _solutions; // bountyId -> Solutions[]
+mapping(bytes32 => uint256) public issueToBounty;  // keccak256(owner+repo+issue) -> bountyId
+```
+
+The `issueToBounty` mapping uses `keccak256(abi.encodePacked(repoOwner, repoName, issueNumber))` as the key, ensuring each GitHub issue can only have one bounty.
+
+### Functions
+
+#### `createBounty`
+
+```solidity
+function createBounty(
+    string calldata repoOwner,
+    string calldata repoName,
+    uint256 issueNumber
+) external payable returns (uint256)
+```
+
+Creates a new bounty and escrows the sent ETH. Requirements:
+- `msg.value > 0` -- Must send ETH to fund the bounty
+- No existing bounty for this issue (checked via `issueToBounty`)
+
+Returns the new bounty ID. Emits `BountyCreated`.
+
+#### `updateBountyMetadata`
+
+```solidity
+function updateBountyMetadata(
+    uint256 bountyId,
+    string calldata prdHash,
+    string calldata qaHash,
+    uint256 estimatedComplexity
+) external onlyOwner
+```
+
+Updates the PRD hash, QA hash, and complexity estimate for a bounty. Called by the oracle after AI agents have analyzed the issue. Emits `BountyMetadataUpdated`.
+
+#### `submitSolution`
+
+```solidity
+function submitSolution(
+    uint256 bountyId,
+    address contributor,
+    uint256 prNumber,
+    string calldata commitHash
+) external onlyOwner returns (uint256)
+```
+
+Registers a new solution for an open bounty. Multiple solutions can be submitted for the same bounty (competing contributors). Returns the solution ID. Emits `SolutionSubmitted`.
+
+Requirements:
+- Bounty must have status `Open`
+
+#### `acceptSolution`
+
+```solidity
+function acceptSolution(
+    uint256 bountyId,
+    uint256 solutionIndex
+) external onlyOwner
+```
+
+Accepts a solution and pays out the escrowed ETH to the contributor. This is the core payout mechanism.
+
+What happens:
+1. Solution status set to `Accepted`
+2. Bounty status set to `Closed`
+3. `closedAt` timestamp recorded
+4. Full bounty amount transferred to `contributor` via `call{value}`
+5. Bounty amount set to 0
+
+Requirements:
+- Bounty must be `Open`
+- `solutionIndex` must be valid
+- Solution must have status `Submitted`
+
+Emits `SolutionAccepted`.
+
+#### `cancelBounty`
+
+```solidity
+function cancelBounty(uint256 bountyId) external
+```
+
+Cancels a bounty and refunds the escrowed ETH to the original maintainer. Can be called by either the maintainer or the oracle. Emits `BountyCancelled`.
+
+Requirements:
+- Caller must be the maintainer or the oracle
+- Bounty must be `Open`
+
+#### `solutionCount`
+
+```solidity
+function solutionCount(uint256 bountyId) external view returns (uint256)
+```
+
+Returns the number of solutions submitted for a bounty.
+
+#### `getSolution`
+
+```solidity
+function getSolution(
+    uint256 bountyId,
+    uint256 index
+) external view returns (Solution memory)
+```
+
+Returns the solution at the given index for a bounty.
+
+### Events
+
+```solidity
+event BountyCreated(
+    uint256 indexed bountyId,
+    address indexed maintainer,
+    string repoOwner,
+    string repoName,
+    uint256 issueNumber,
+    uint256 amount
+);
+
+event SolutionSubmitted(
+    uint256 indexed bountyId,
+    uint256 indexed solutionId,
+    address indexed contributor,
+    uint256 prNumber
+);
+
+event SolutionAccepted(
+    uint256 indexed bountyId,
+    uint256 indexed solutionId,
+    address indexed contributor,
+    uint256 payout
+);
+
+event BountyCancelled(uint256 indexed bountyId);
+
+event BountyMetadataUpdated(
+    uint256 indexed bountyId,
+    string prdHash,
+    string qaHash,
+    uint256 estimatedComplexity
+);
+```
+
+---
+
+## Leaderboard.sol
+
+Tracks reputation scores for all participants in the bounty ecosystem.
+
+**Source:** `contracts/src/Leaderboard.sol`
+
+### State
+
+#### Enums
+
+```solidity
+enum ActorType { Contributor, Maintainer, Plugin }
+```
+
+Three actor types are defined. `Plugin` is reserved for future use (AI agent reputation tracking).
+
+#### Score Struct
+
+```solidity
+struct Score {
+    uint256 totalBounties;  // Number of completed bounties
+    uint256 totalPayout;    // Cumulative ETH paid/received (in wei)
+    int256 reputation;      // Reputation points (can go negative via penalties)
+}
+```
+
+#### Storage
+
+```solidity
+address public owner;  // Oracle address
+mapping(address => mapping(uint8 => Score)) public scores;
+```
+
+Scores are stored per-address, per-actor-type. This means the same address can have separate reputation as a contributor and as a maintainer.
+
+### Functions
+
+#### `recordBountyCompleted`
+
+```solidity
+function recordBountyCompleted(
+    address contributor,
+    address maintainer,
+    uint256 payoutAmount
+) external onlyOwner
+```
+
+Records a completed bounty for both the contributor and the maintainer:
+
+- **Contributor**: +1 bounty, +payoutAmount payout, **+10 reputation**
+- **Maintainer**: +1 bounty, +payoutAmount payout, **+5 reputation**
+
+Emits `ReputationUpdated` for both parties.
+
+#### `penalize`
+
+```solidity
+function penalize(
+    address actor,
+    uint8 actorType,
+    int256 amount
+) external onlyOwner
+```
+
+Deducts reputation from an actor. The `amount` is subtracted from the actor's reputation score. Emits `ReputationUpdated`.
+
+#### `getScore`
+
+```solidity
+function getScore(
+    address actor,
+    uint8 actorType
+) external view returns (Score memory)
+```
+
+Returns the full score (total bounties, total payout, reputation) for an actor of a given type.
+
+### Events
+
+```solidity
+event ReputationUpdated(
+    address indexed actor,
+    uint8 actorType,
+    int256 newReputation
+);
+```
+
+---
+
+## Deployment
+
+### Local (Anvil)
+
+Contracts are deployed using a Foundry deployment script (`contracts/script/Deploy.s.sol`):
+
+```bash
+# Start Anvil
+make anvil
+
+# Deploy both contracts
+make deploy
+```
+
+The deploy script:
+1. Runs `forge script` against the local Anvil instance
+2. Parses contract addresses from the broadcast artifact at `contracts/broadcast/Deploy.s.sol/31337/run-latest.json`
+3. Updates `.env` with `BOUNTY_CONTRACT_ADDRESS` and `LEADERBOARD_CONTRACT_ADDRESS`
+4. Creates `frontend/.env.local` with `NEXT_PUBLIC_BOUNTY_CONTRACT` and `NEXT_PUBLIC_LEADERBOARD_CONTRACT`
+
+The deployer account (Anvil Account 0) becomes the oracle/owner of both contracts:
+```
+Address: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+
+### Production
+
+The contracts are EVM-compatible and can be deployed to any EVM chain. To deploy to a different network:
+
+1. Set `ANVIL_RPC_URL` to the target chain's RPC endpoint
+2. Set `DEPLOYER_PRIVATE_KEY` to a funded account on that chain
+3. Run `make deploy`
+
+The deployment script will work with any chain ID -- Ethereum mainnet, Polygon, Arbitrum, Base, etc.
+
+## Contract Interaction
+
+The Go backend interacts with contracts via generated Go bindings (created by `abigen` from Foundry-compiled ABIs). Key methods on the blockchain client:
+
+```go
+// Create a bounty with ETH
+chain.CreateBountyOnChain(repoOwner, repoName, issueNumber, amountWei)
+
+// Update metadata after AI analysis
+chain.UpdateBountyMetadata(bountyID, prdHash, qaHash, complexity)
+
+// Register a contributor's solution
+chain.SubmitSolutionOnChain(bountyID, contributorAddr, prNumber, commitHash)
+
+// Accept and pay out
+chain.AcceptSolutionOnChain(bountyID, solutionIndex)
+
+// Update leaderboard
+chain.RecordBountyCompleted(contributor, maintainer, payoutAmount)
+```
+
+All write operations use the oracle's private key via `bind.NewKeyedTransactorWithChainID`.

@@ -1,0 +1,285 @@
+# GitHub Integration
+
+GitBusters connects to GitHub through webhooks and the GitHub API. The Go backend listens for specific events, processes them through the oracle, and posts comments back to issues and PRs.
+
+## Webhook Setup
+
+### Development (smee.io)
+
+In local development, GitHub cannot reach your `localhost`. [smee.io](https://smee.io) acts as a relay:
+
+```
+GitHub ──webhook──> smee.io ──forward──> localhost:8080/api/webhook/github
+```
+
+**Setup steps:**
+
+1. Visit [https://smee.io/new](https://smee.io/new) to create a channel
+2. Copy the URL and add it to your `.env`:
+   ```env
+   SMEE_URL=https://smee.io/your-unique-channel-id
+   ```
+3. Start the forwarding client:
+   ```bash
+   make smee
+   ```
+   This runs: `smee --url $SMEE_URL --target http://localhost:$PORT/api/webhook/github`
+
+4. Configure the GitHub webhook on your repository:
+   - Go to **Settings > Webhooks > Add webhook**
+   - **Payload URL**: Your smee.io URL
+   - **Content type**: `application/json`
+   - **Secret**: Same value as `GITHUB_WEBHOOK_SECRET` in `.env`
+   - **Events**: Select "Issues" and "Pull requests"
+
+### Production
+
+In production, point the webhook directly at your backend's public URL:
+- **Payload URL**: `https://your-domain.com/api/webhook/github`
+- No smee.io needed
+
+## Supported Events
+
+The oracle handles three specific event/action combinations:
+
+### `issues.labeled`
+
+**Trigger:** A label is added to an issue.
+
+**Behavior:** The oracle checks if the added label's name is `"bounty"` (case-insensitive). If so, it creates an on-chain bounty with AI-generated analysis.
+
+```go
+func (o *Oracle) HandleEvent(eventType string, payload *gh.WebhookPayload) {
+    switch eventType {
+    case "issues":
+        if payload.Action == "labeled" && payload.Issue != nil {
+            o.onIssueLabeled(payload)
+        }
+    // ...
+    }
+}
+```
+
+The label check:
+```go
+if payload.Label == nil || !strings.EqualFold(payload.Label.Name, "bounty") {
+    return
+}
+```
+
+### `pull_request.opened`
+
+**Trigger:** A new pull request is opened.
+
+**Behavior:** The oracle parses the PR body for an issue reference and wallet address, then registers the solution on-chain.
+
+Required PR body format:
+```markdown
+Fixes #42
+
+<!-- bounty-wallet: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC -->
+```
+
+The issue number is extracted by looking for these prefixes (case-insensitive):
+- `Fixes #`
+- `Closes #`
+- `Resolves #`
+
+The wallet address is extracted by looking for:
+- `bounty-wallet:` followed by a `0x`-prefixed 42-character hex string
+- As a fallback, `wallet:` is also recognized
+
+### `pull_request.closed` (merged)
+
+**Trigger:** A pull request is closed with `merged: true`.
+
+**Behavior:** The oracle runs the reviewer agent, accepts the solution on-chain (triggering payout), and updates the leaderboard.
+
+```go
+if payload.Action == "closed" && payload.PullRequest != nil && payload.PullRequest.Merged {
+    o.onPRMerged(payload)
+}
+```
+
+Only merged PRs trigger payout. A closed-but-not-merged PR is ignored.
+
+## HMAC Signature Verification
+
+All incoming webhooks are verified using HMAC-SHA256 to ensure they originate from GitHub.
+
+The verification flow:
+
+1. GitHub computes `HMAC-SHA256(webhook_secret, request_body)` and sends it in the `X-Hub-Signature-256` header as `sha256=<hex_digest>`.
+2. The webhook handler computes the same HMAC using the configured `GITHUB_WEBHOOK_SECRET`.
+3. If the signatures match (using constant-time comparison), the request is processed. Otherwise, it returns `401 Unauthorized`.
+
+```go
+func (h *WebhookHandler) verifySignature(body []byte, signature string) bool {
+    if !strings.HasPrefix(signature, "sha256=") {
+        return false
+    }
+    sig, err := hex.DecodeString(strings.TrimPrefix(signature, "sha256="))
+    if err != nil {
+        return false
+    }
+    mac := hmac.New(sha256.New, []byte(h.secret))
+    mac.Write(body)
+    expected := mac.Sum(nil)
+    return hmac.Equal(sig, expected)
+}
+```
+
+If `GITHUB_WEBHOOK_SECRET` is empty, signature verification is skipped (useful for local development without smee.io).
+
+## The Oracle Bridge
+
+The oracle is the Go backend component that translates GitHub events into on-chain transactions. It sits between the webhook handler and the blockchain client:
+
+```
+Webhook Handler -> Oracle -> Blockchain Client -> Smart Contracts
+                     |
+                     +-> AI Agents (PRD, Estimator, QA, Reviewer)
+                     |
+                     +-> GitHub Client (post comments)
+```
+
+### Oracle Construction
+
+```go
+type Oracle struct {
+    chain  *blockchain.Client    // Ethereum client with contract bindings
+    gh     *gh.Client            // GitHub API client
+    agents *agents.AgentSet      // AI agent plugins
+}
+```
+
+### Issue Key Derivation
+
+The oracle replicates the same key derivation used by the smart contract to look up bounties by issue:
+
+```go
+func issueKey(owner, repo string, issueNum uint64) [32]byte {
+    data := []byte(owner)
+    data = append(data, []byte(repo)...)
+    padded := make([]byte, 32)
+    numBytes := new(big.Int).SetUint64(issueNum).Bytes()
+    copy(padded[32-len(numBytes):], numBytes)
+    data = append(data, padded...)
+    hash := crypto.Keccak256(data)
+    var result [32]byte
+    copy(result[:], hash)
+    return result
+}
+```
+
+This matches the Solidity `keccak256(abi.encodePacked(repoOwner, repoName, issueNumber))`.
+
+## Bot Comments
+
+The oracle posts structured comments at each stage:
+
+| Stage | Location | Content |
+|---|---|---|
+| Bounty created | Issue | Complexity, amount, PRD, QA criteria, "How to Claim" instructions |
+| Missing wallet | PR | Instructions to add `<!-- bounty-wallet: 0x... -->` |
+| Solution registered | PR | Solution ID, contributor wallet, commit hash |
+| Bounty paid out | PR | Contributor address, payout amount in ETH, review score, summary |
+
+## GitHub API Client
+
+The backend uses `google/go-github/v60` for API operations:
+
+```go
+type Client struct {
+    gh    *gh.Client
+    token string
+}
+```
+
+### PostComment
+
+Posts a comment on an issue or PR:
+```go
+func (c *Client) PostComment(ctx context.Context, owner, repo string, issueNum int, body string) error
+```
+
+### GetPRDiff
+
+Fetches the diff of a PR for the reviewer agent:
+```go
+func (c *Client) GetPRDiff(ctx context.Context, owner, repo string, prNum int) (string, error)
+```
+
+Uses the `application/vnd.github.v3.diff` media type to get the raw diff.
+
+## Webhook Payload Types
+
+The webhook handler parses these types from the JSON payload:
+
+```go
+type WebhookPayload struct {
+    Action      string       `json:"action"`
+    Issue       *Issue       `json:"issue,omitempty"`
+    PullRequest *PullRequest `json:"pull_request,omitempty"`
+    Repository  Repository   `json:"repository"`
+    Label       *Label       `json:"label,omitempty"`
+}
+
+type Issue struct {
+    Number int     `json:"number"`
+    Title  string  `json:"title"`
+    Body   string  `json:"body"`
+    State  string  `json:"state"`
+    Labels []Label `json:"labels"`
+}
+
+type PullRequest struct {
+    Number  int    `json:"number"`
+    Title   string `json:"title"`
+    Body    string `json:"body"`
+    State   string `json:"state"`
+    Merged  bool   `json:"merged"`
+    Head    GitRef `json:"head"`
+    DiffURL string `json:"diff_url"`
+    HTMLURL string `json:"html_url"`
+}
+
+type Repository struct {
+    FullName string `json:"full_name"`
+    Name     string `json:"name"`
+    Owner    struct {
+        Login string `json:"login"`
+    } `json:"owner"`
+}
+```
+
+## AI Agent Plugins
+
+Four agent interfaces are called during the bounty lifecycle:
+
+| Agent | When Called | Input | Output |
+|---|---|---|---|
+| **PRD** | Issue labeled | Issue title + body | Requirements document + hash |
+| **Estimator** | Issue labeled | PRD + repo name | Complexity (1-10), hours, bounty amount in wei |
+| **QA** | Issue labeled | PRD | List of acceptance criteria + hash |
+| **Reviewer** | PR merged | PRD + QA + PR diff | Score (0-100), summary, recommendation (accept/reject) |
+
+The current implementation uses stub agents that return deterministic results. The interfaces are designed to be swapped with real AI implementations (e.g., LLM-based analysis):
+
+```go
+type PRDAgent interface {
+    GeneratePRD(issueTitle, issueBody string) (*models.PRDOutput, error)
+}
+
+type EstimatorAgent interface {
+    Estimate(prd *models.PRDOutput, repoFullName string) (*models.EstimateOutput, error)
+}
+
+type QAAgent interface {
+    GenerateCriteria(prd *models.PRDOutput) (*models.QAOutput, error)
+}
+
+type ReviewerAgent interface {
+    Review(prd *models.PRDOutput, qa *models.QAOutput, prDiff string) (*models.ReviewOutput, error)
+}
+```

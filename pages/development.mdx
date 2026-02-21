@@ -1,0 +1,277 @@
+# Development Guide
+
+This guide covers local development setup, testing, seeding, and project structure in detail.
+
+## Local Setup with Anvil
+
+[Anvil](https://book.getfoundry.sh/reference/anvil/) is Foundry's local Ethereum node. It provides a pre-funded development blockchain with instant block mining.
+
+### Starting Anvil
+
+```bash
+make anvil
+```
+
+This runs:
+```bash
+anvil --host 127.0.0.1 --port 8545 --chain-id 31337
+```
+
+Anvil provides 10 pre-funded accounts, each with 10,000 ETH. The first account (Account 0) is used as the deployer/oracle:
+
+```
+Address:     0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+
+### Deploying Contracts
+
+```bash
+make deploy
+```
+
+This runs `scripts/deploy-contracts.sh`, which:
+
+1. Runs `forge script script/Deploy.s.sol:Deploy` against the local Anvil
+2. Reads the broadcast artifact at `contracts/broadcast/Deploy.s.sol/31337/run-latest.json`
+3. Extracts the BountyPlatform and Leaderboard contract addresses
+4. Updates `.env` with `BOUNTY_CONTRACT_ADDRESS` and `LEADERBOARD_CONTRACT_ADDRESS`
+5. Creates `frontend/.env.local` with the frontend-specific variables
+
+After deployment, the contracts are ready to use and the backend can connect to them.
+
+### Generating Go Bindings
+
+If you modify the Solidity contracts, regenerate the Go bindings:
+
+```bash
+make generate
+```
+
+This first builds the contracts (`forge build`) then runs `scripts/generate-bindings.sh` to produce Go bindings from the ABI artifacts into `backend/pkg/bindings/`.
+
+## Running Tests
+
+### Contract Tests
+
+```bash
+make contracts-test
+```
+
+Runs `forge test -vvv` in the `contracts/` directory. Tests are Solidity files in `contracts/test/`.
+
+### End-to-End Tests
+
+```bash
+make test-e2e
+```
+
+This runs `scripts/test-e2e.sh`, which:
+
+1. Starts a fresh Anvil instance on port `8546` (to avoid conflicting with the dev instance on 8545)
+2. Deploys contracts to the test Anvil
+3. Starts the Go backend on port `8081` (avoiding conflict with dev on 8080)
+4. Runs [Hurl](https://hurl.dev/) test files against the backend:
+   - `tests/health.hurl` -- Health endpoint checks
+   - `tests/errors.hurl` -- Error handling tests
+   - `tests/lifecycle.hurl` -- Full bounty lifecycle test
+5. Cleans up (kills Anvil and backend processes)
+
+The test environment is fully isolated from the development environment.
+
+### All Tests
+
+```bash
+make test
+```
+
+Runs both contract tests and E2E tests sequentially.
+
+## Seeding Demo Data
+
+```bash
+make seed
+```
+
+This runs `scripts/seed.sh`, which populates the local blockchain with realistic demo data using `cast send`:
+
+### What Gets Created
+
+| Bounty | Repo | Issue | Amount | Status | Solutions |
+|---|---|---|---|---|---|
+| #1 | miguelemosreverte/playground-01 | #1 | 0.05 ETH | Closed | 1 (accepted) |
+| #2 | miguelemosreverte/playground-01 | #2 | 0.08 ETH | Closed | 1 (accepted) |
+| #3 | miguelemosreverte/playground-01 | #5 | 0.04 ETH | Open | 0 |
+| #4 | miguelemosreverte/playground-01 | #8 | 0.06 ETH | Open | 1 (submitted) |
+| #5 | miguelemosreverte/playground-01 | #12 | 0.12 ETH | Closed | 2 (first accepted) |
+| #6 | miguelemosreverte/playground-01 | #15 | 0.03 ETH | Open | 0 |
+| #7 | miguelemosreverte/playground-01 | #18 | 0.07 ETH | Closed | 1 (accepted) |
+
+**Summary:** 7 bounties total -- 4 completed, 3 open, 0.32 ETH total paid out.
+
+### Leaderboard After Seeding
+
+| Contributor | Bounties | Earned |
+|---|---|---|
+| Contributor A (`0x3C44...93BC`) | 2 | 0.17 ETH |
+| Contributor B (`0x90F7...3906`) | 2 | 0.15 ETH |
+| Contributor C (`0x15d3...6A65`) | 0 accepted | (submitted only) |
+
+The seed script uses three Anvil accounts as contributors and the deployer (Account 0) as the maintainer.
+
+## Running the Demo
+
+```bash
+make demo
+```
+
+This runs `scripts/demo.sh`, a fully automated end-to-end demonstration against a real GitHub repository. It requires:
+- A running dev environment (`make dev-all`)
+- A configured `GITHUB_TEST_REPO` (defaults to `miguelemosreverte/playground-01`)
+- A valid `GITHUB_TOKEN` with repo permissions
+- smee.io running for webhook forwarding
+
+### Demo Steps
+
+1. **Creates a GitHub issue** with a data export feature request
+2. **Adds the `bounty` label** -- triggers the webhook and creates an on-chain bounty
+3. **Verifies** the bounty was created on-chain via the API
+4. **Creates a PR** on a feature branch with an implementation, referencing the issue and including a wallet address
+5. **Verifies** the solution was registered on-chain
+6. **Merges the PR** -- triggers the payout
+7. **Verifies** the bounty status is "closed" and the escrow was released
+8. **Displays** the final leaderboard
+
+Each step has a 15-second wait for webhook processing.
+
+## Project Structure
+
+```
+bounty-platform/
+├── contracts/                    # Solidity contracts (Foundry)
+│   ├── src/
+│   │   ├── BountyPlatform.sol        # Main escrow contract
+│   │   └── Leaderboard.sol           # Reputation tracking
+│   ├── script/
+│   │   └── Deploy.s.sol              # Foundry deploy script
+│   ├── test/                         # Solidity tests
+│   └── foundry.toml                  # Foundry configuration
+│
+├── backend/                      # Go server
+│   ├── cmd/
+│   │   └── server/
+│   │       └── main.go               # Entry point
+│   ├── internal/
+│   │   ├── api/
+│   │   │   ├── router.go             # chi router + CORS
+│   │   │   └── handlers.go           # REST endpoint handlers
+│   │   ├── blockchain/
+│   │   │   ├── client.go             # Ethereum client setup
+│   │   │   ├── bounty.go             # BountyPlatform contract methods
+│   │   │   └── leaderboard.go        # Leaderboard contract methods
+│   │   ├── config/
+│   │   │   └── config.go             # Environment variable loading
+│   │   ├── github/
+│   │   │   ├── webhook.go            # Webhook handler (HMAC verification)
+│   │   │   ├── events.go             # Webhook payload types
+│   │   │   └── client.go             # GitHub API client + PR body parsing
+│   │   ├── oracle/
+│   │   │   └── oracle.go             # Oracle bridge (GitHub -> blockchain)
+│   │   ├── agents/
+│   │   │   ├── interface.go          # Agent interfaces
+│   │   │   └── stubs.go              # Stub implementations
+│   │   └── models/
+│   │       └── models.go             # Shared data types
+│   ├── pkg/
+│   │   └── bindings/                 # Generated Go bindings from ABIs
+│   ├── go.mod
+│   └── go.sum
+│
+├── frontend/                     # Next.js dashboard
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── page.tsx              # Dashboard (home)
+│   │   │   ├── layout.tsx            # Root layout + metadata
+│   │   │   ├── globals.css           # Global styles
+│   │   │   ├── bounties/
+│   │   │   │   ├── page.tsx          # Bounties list
+│   │   │   │   └── [id]/
+│   │   │   │       └── page.tsx      # Bounty detail
+│   │   │   └── leaderboard/
+│   │   │       └── page.tsx          # Leaderboard
+│   │   ├── components/
+│   │   │   ├── BountyCard.tsx        # Bounty card component
+│   │   │   ├── LeaderboardTable.tsx  # Leaderboard table
+│   │   │   ├── StatusBadge.tsx       # Status pill badge
+│   │   │   ├── Skeleton.tsx          # Loading skeletons
+│   │   │   └── Navbar.tsx            # Top navigation
+│   │   ├── lib/
+│   │   │   └── api.ts               # API client + TypeScript interfaces
+│   │   └── providers/
+│   │       ├── Web3Provider.tsx      # Lazy Web3 provider wrapper
+│   │       └── Web3ProviderInner.tsx # RainbowKit + wagmi setup
+│   ├── public/
+│   │   └── mascot.jpeg              # GitBusters mascot image
+│   ├── package.json
+│   └── next.config.ts
+│
+├── scripts/
+│   ├── deploy-contracts.sh           # Deploy + update .env
+│   ├── generate-bindings.sh          # Generate Go bindings from ABIs
+│   ├── seed.sh                       # Seed demo bounties
+│   ├── demo.sh                       # Full lifecycle demo
+│   └── test-e2e.sh                   # E2E test runner
+│
+├── tests/                        # Hurl E2E test files
+│   ├── health.hurl
+│   ├── errors.hurl
+│   └── lifecycle.hurl
+│
+├── Makefile                      # All build/run/test targets
+├── .env.example                  # Environment template
+└── .env                          # Local environment (not committed)
+```
+
+## Environment Variables
+
+All configuration is via environment variables, loaded from `.env` by the backend (via godotenv) and by the Makefile.
+
+| Variable | Description | Default |
+|---|---|---|
+| `ANVIL_RPC_URL` | Ethereum JSON-RPC endpoint | `http://127.0.0.1:8545` |
+| `DEPLOYER_PRIVATE_KEY` | Key for contract deployment | Anvil Account 0 |
+| `ORACLE_PRIVATE_KEY` | Key for oracle transactions | Anvil Account 0 |
+| `BOUNTY_CONTRACT_ADDRESS` | BountyPlatform contract address | (set by deploy) |
+| `LEADERBOARD_CONTRACT_ADDRESS` | Leaderboard contract address | (set by deploy) |
+| `GITHUB_WEBHOOK_SECRET` | HMAC secret for webhook verification | (empty = skip verification) |
+| `GITHUB_TOKEN` | GitHub personal access token | (empty = unauthenticated) |
+| `GITHUB_TEST_REPO` | Test repository for demo/E2E | `miguelemosreverte/playground-01` |
+| `SMEE_URL` | smee.io webhook relay URL | (empty = skip smee) |
+| `PORT` | Backend HTTP port | `8080` |
+| `NEXT_PUBLIC_API_URL` | Frontend API base URL | `http://localhost:8080` |
+| `NEXT_PUBLIC_BOUNTY_CONTRACT` | Frontend contract address | (set by deploy) |
+| `NEXT_PUBLIC_LEADERBOARD_CONTRACT` | Frontend leaderboard address | (set by deploy) |
+
+## Makefile Targets
+
+| Target | Description |
+|---|---|
+| `make help` | Show all available targets |
+| `make install` | Install all dependencies (contracts, backend, frontend, smee) |
+| `make contracts-build` | Build Solidity contracts with forge |
+| `make contracts-test` | Run contract tests with forge test -vvv |
+| `make deploy` | Deploy contracts to running Anvil and update .env |
+| `make generate` | Generate Go bindings from contract ABIs |
+| `make backend-build` | Compile Go backend to `bin/server` |
+| `make backend-run` | Run Go backend with `go run` |
+| `make frontend-dev` | Start Next.js dev server |
+| `make anvil` | Start Anvil local blockchain |
+| `make smee` | Start smee webhook forwarding |
+| `make dev` | Print manual startup instructions |
+| `make dev-all` | Start all services in background |
+| `make stop` | Stop all background services |
+| `make demo` | Run full lifecycle demo |
+| `make seed` | Seed Anvil with demo data |
+| `make test-e2e` | Run Hurl E2E tests |
+| `make test` | Run all tests (contracts + E2E) |
+| `make clean` | Clean build artifacts |

@@ -1,0 +1,99 @@
+# How GitBusters Compares
+
+GitBusters is not the first bounty platform for open source. This page compares our approach with existing systems, particularly GitHoney -- a Cardano-based bounty platform -- and outlines our roadmap.
+
+## GitBusters vs GitHoney
+
+[GitHoney](https://githoney.io) is a Cardano-based bounty system for open-source development. Both platforms share a similar vision but differ in execution.
+
+### What We Share
+
+Both GitBusters and GitHoney are built around the same core idea:
+
+| Feature | GitBusters | GitHoney |
+|---|---|---|
+| **On-chain escrow** | Solidity contract holds ETH | Cardano smart contract holds ADA/tokens |
+| **GitHub integration** | Webhook-driven bot | GitHub bot |
+| **Bounty lifecycle** | Issue -> Solutions -> Payout | Issue -> Solutions -> Payout |
+| **Reputation system** | Leaderboard contract (on-chain) | On-chain reputation tracking |
+| **Open to all contributors** | Human or bot | Human contributors |
+
+Both systems solve the same trust problem: bounty funds are locked in a smart contract and released only when conditions are met, eliminating the need for a trusted intermediary.
+
+### Key Differences
+
+| Aspect | GitBusters | GitHoney |
+|---|---|---|
+| **Blockchain** | EVM (Ethereum, Polygon, Arbitrum, etc.) | Cardano |
+| **Token** | ETH (native currency) | ADA + Cardano native tokens |
+| **AI analysis** | PRD, Estimator, QA, and Reviewer agents | No AI analysis |
+| **Multiple solutions** | Multiple competing PRs per bounty | Single assignee model |
+| **Auto-payout** | Automatic on PR merge | Manual review and release |
+| **Bot contributors** | First-class support for AI agents | Human-only |
+| **Complexity estimation** | AI-driven (1-10 scale) | Manual |
+| **QA criteria** | AI-generated acceptance criteria | Manual specification |
+| **Oracle model** | Go backend (local), Chainlink (roadmap) | Cardano oracle |
+| **Smart contract language** | Solidity | Plutus / Aiken |
+| **Toolchain** | Foundry (forge/anvil/cast) | Cardano CLI / Lucid |
+
+### GitBusters Advantages
+
+1. **EVM ecosystem**: Access to the largest smart contract developer community. Deploy on Ethereum, Polygon, Arbitrum, Base, or any EVM chain.
+
+2. **AI-powered workflow**: Four agent plugins analyze issues and evaluate solutions automatically. The PRD agent generates requirements, the Estimator suggests bounty amounts, the QA agent creates acceptance criteria, and the Reviewer evaluates PR quality.
+
+3. **Bot-friendly**: GitBusters explicitly supports AI agents as contributors. An LLM-powered coding agent can discover bounties, submit PRs, and receive ETH payments -- fully automatically.
+
+4. **Competing solutions**: Multiple contributors can work on the same bounty simultaneously. This creates healthy competition and increases the chance of a high-quality solution.
+
+5. **Automatic payout**: When a maintainer merges a PR, the payout happens automatically. No manual release step needed.
+
+6. **Simpler UX**: Label an issue, review PRs as normal, merge to pay. The blockchain mechanics are invisible to maintainers and contributors who do not need to interact with wallets.
+
+### GitHoney Advantages
+
+1. **Cardano ecosystem**: Lower transaction fees, different security model, native multi-asset support.
+
+2. **Production-ready**: GitHoney is live on mainnet with real users and real bounties.
+
+3. **Multi-token support**: Can use any Cardano native token for bounties, not just the native currency.
+
+4. **Established community**: Active user base with proven track record.
+
+## Comparison with Other Platforms
+
+### vs. Gitcoin
+
+Gitcoin is the largest bounty/grants platform in Web3 but operates primarily as a grants coordination platform rather than an automated bounty system. GitBusters focuses on the tight loop of "label issue -> submit PR -> get paid" with minimal friction.
+
+### vs. Bount.ing / Bounty Platforms
+
+Many bounty aggregators exist (Bount.ing, Algora, etc.) but they typically rely on manual coordination and centralized escrow. GitBusters differentiates by:
+- Fully on-chain escrow (trustless)
+- Automated flow via webhooks (minimal manual steps)
+- AI-powered issue analysis
+- Open to bot contributors
+
+## Roadmap
+
+Features planned for future releases:
+
+### Near-term
+
+- **Sponsor role**: Allow third parties (not just the issue author) to fund bounties. Multiple sponsors can contribute ETH to the same bounty.
+- **Deadlines**: Time-limited bounties that auto-cancel and refund if no solution is accepted before the deadline.
+- **Partial payouts**: Split bounty among multiple contributors when solutions are complementary rather than competing.
+
+### Medium-term
+
+- **Multi-token support**: Accept ERC-20 tokens (USDC, DAI, etc.) in addition to native ETH.
+- **Real AI agents**: Replace stub agents with LLM-powered implementations (GPT-4, Claude, etc.) for PRD generation, code review, and quality assessment.
+- **Chainlink oracle**: Replace the centralized Go backend oracle with a decentralized Chainlink oracle network for production deployments.
+- **Badges and achievements**: NFT-based badges for milestones (first bounty, 10 bounties, top contributor, etc.).
+
+### Long-term
+
+- **Cross-chain**: Deploy on multiple chains with bridging support so bounties can be funded from any chain.
+- **DAO governance**: Token-based governance for platform parameters (minimum bounty amount, reputation thresholds, etc.).
+- **Dispute resolution**: On-chain arbitration for contested bounties where the reviewer agent's recommendation is challenged.
+- **Plugin marketplace**: Community-contributed AI agents for specialized domains (security review, performance analysis, etc.).

@@ -1,0 +1,253 @@
+# Bounty Lifecycle
+
+This page walks through the complete lifecycle of a bounty -- from issue creation to payout -- with details on what happens at each stage, both on GitHub and on-chain.
+
+## Overview
+
+```
+  Issue Created         PR Opened           PR Merged
+  + "bounty" label      (references issue)  (by maintainer)
+       |                     |                    |
+       v                     v                    v
+  +---------+          +------------+        +-----------+
+  |  OPEN   | -------> | OPEN       | -----> |  CLOSED   |
+  |         |          | (solutions |        | (paid out)|
+  | Escrow  |          |  submitted)|        |           |
+  | funded  |          +------------+        +-----------+
+  +---------+                                     |
+       |                                          v
+       |                                   Leaderboard
+       v                                   Updated
+  +-----------+
+  | CANCELLED |  (maintainer or oracle cancels)
+  | (refunded)|
+  +-----------+
+```
+
+## Step 1: Issue Created and Labeled
+
+**Trigger:** A maintainer adds the `bounty` label to a GitHub issue.
+
+**What happens:**
+
+1. GitHub fires an `issues.labeled` webhook to the Go backend.
+2. The webhook handler verifies the HMAC signature and parses the payload.
+3. The oracle checks that the label name is `"bounty"` (case-insensitive).
+4. Three AI agents run sequentially:
+
+   **PRD Agent** -- Generates a Product Requirements Document from the issue title and body:
+   ```go
+   prd, err := o.agents.PRD.GeneratePRD(issue.Title, issue.Body)
+   ```
+   Output: title, description, and a content hash.
+
+   **Estimator Agent** -- Evaluates complexity and suggests a bounty amount:
+   ```go
+   est, err := o.agents.Estimator.Estimate(prd, repo.FullName)
+   ```
+   Output: complexity (1-10), estimated hours, and a suggested bounty in wei. The stub implementation uses 0.01 ETH per complexity point.
+
+   **QA Agent** -- Generates acceptance criteria:
+   ```go
+   qa, err := o.agents.QA.GenerateCriteria(prd)
+   ```
+   Output: list of criteria strings and a content hash.
+
+5. The oracle creates the bounty on-chain by calling `BountyPlatform.createBounty()` with ETH:
+   ```go
+   bountyID, err := o.chain.CreateBountyOnChain(
+       repo.Owner.Login, repo.Name,
+       uint64(issue.Number),
+       est.SuggestedBounty,
+   )
+   ```
+
+6. Metadata is stored on-chain:
+   ```go
+   o.chain.UpdateBountyMetadata(bountyID, prd.Hash, qa.Hash, est.Complexity)
+   ```
+
+7. The oracle posts a comment on the GitHub issue:
+
+   ```markdown
+   **Bounty #1 Created**
+
+   **Estimated Complexity:** 3/10
+   **Bounty Amount:** 0.0300 ETH
+   **Estimated Hours:** 6
+
+   ### PRD
+   [Generated requirements document]
+
+   ### QA Criteria
+   - [ ] All existing tests pass
+   - [ ] New functionality is covered by tests
+   - [ ] Code follows project style guidelines
+   - [ ] No security vulnerabilities introduced
+
+   ### How to Claim
+   1. Open a PR that fixes this issue
+   2. Include in your PR body:
+      - `Fixes #1`
+      - `<!-- bounty-wallet: 0xYourAddressHere -->`
+   3. Once merged, the bounty will be automatically paid to your wallet.
+   ```
+
+**On-chain state after this step:**
+- Bounty status: `Open`
+- ETH escrowed in the contract
+- PRD and QA hashes stored
+- `issueToBounty` mapping populated
+
+## Step 2: Contributor Opens a PR
+
+**Trigger:** A contributor opens a pull request that references the bounty issue.
+
+**Requirements in the PR body:**
+- Reference the issue: `Fixes #N`, `Closes #N`, or `Resolves #N`
+- Include a wallet address: `<!-- bounty-wallet: 0x1234...abcd -->`
+
+**What happens:**
+
+1. GitHub fires a `pull_request.opened` webhook.
+2. The oracle parses the PR body to extract:
+   - The issue number (via `ParseIssueNumber` -- looks for "Fixes #", "Closes #", or "Resolves #")
+   - The wallet address (via `ParseWalletAddress` -- looks for `bounty-wallet:` followed by a 42-character hex address)
+
+3. If the wallet address is missing, the oracle posts a helpful comment:
+   ```
+   Please include your wallet address in the PR body:
+   <!-- bounty-wallet: 0xYourAddressHere -->
+   ```
+
+4. The oracle looks up the bounty ID from the issue number:
+   ```go
+   bountyID, err := o.chain.Bounty.IssueToBounty(&bind.CallOpts{},
+       issueKey(repo.Owner.Login, repo.Name, uint64(issueNum)))
+   ```
+
+5. The solution is registered on-chain:
+   ```go
+   solutionID, err := o.chain.SubmitSolutionOnChain(
+       bountyID.Uint64(),
+       common.HexToAddress(wallet),
+       uint64(pr.Number),
+       pr.Head.SHA,
+   )
+   ```
+
+6. The oracle posts a confirmation comment on the PR:
+   ```
+   Solution registered on-chain for Bounty #1.
+
+   - Solution ID: 1
+   - Contributor wallet: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+   - Commit: abc123def4567890
+   ```
+
+**On-chain state after this step:**
+- Solution added to `_solutions[bountyId]` array
+- Solution status: `Submitted`
+- Bounty status: still `Open` (multiple solutions can be submitted)
+
+### Multiple Solutions
+
+Any number of contributors can submit PRs for the same bounty. Each gets a separate on-chain solution entry. Only one can be accepted when a PR is merged.
+
+## Step 3: PR Merged and Payout
+
+**Trigger:** The maintainer merges the pull request.
+
+**What happens:**
+
+1. GitHub fires a `pull_request.closed` webhook with `merged: true`.
+2. The oracle finds the bounty and identifies the matching solution by PR number:
+   ```go
+   for i := uint64(0); i < solCount.Uint64(); i++ {
+       sol, _ := o.chain.Bounty.GetSolution(&bind.CallOpts{}, bountyID, ...)
+       if sol.PrNumber.Uint64() == uint64(pr.Number) {
+           solutionIndex = i
+           found = true
+           break
+       }
+   }
+   ```
+
+3. The **Reviewer Agent** evaluates the PR diff:
+   ```go
+   diff, _ := o.gh.GetPRDiff(ctx, repo.Owner.Login, repo.Name, pr.Number)
+   review, err := o.agents.Reviewer.Review(prd, qa, diff)
+   ```
+   Output: score (0-100), summary, and recommendation ("accept" or "reject").
+
+4. If the recommendation is "accept":
+
+   **Accept the solution on-chain** -- triggers ETH transfer:
+   ```go
+   o.chain.AcceptSolutionOnChain(bountyID.Uint64(), solutionIndex)
+   ```
+
+   **Update the leaderboard:**
+   ```go
+   o.chain.RecordBountyCompleted(sol.Contributor, bounty.Maintainer, payoutAmount)
+   ```
+   - Contributor gets +10 reputation, +1 bounty count
+   - Maintainer gets +5 reputation, +1 bounty count
+
+   **Post payout confirmation** on the PR:
+   ```
+   Bounty #1 has been paid out!
+
+   - Contributor: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+   - Payout: 0.0300 ETH
+   - Review score: 80/100
+   - Summary: Solution meets acceptance criteria. Code quality is acceptable.
+   ```
+
+**On-chain state after this step:**
+- Solution status: `Accepted`
+- Bounty status: `Closed`
+- Bounty amount: `0` (ETH transferred to contributor)
+- `closedAt` timestamp set
+- Leaderboard updated for both contributor and maintainer
+
+## Step 4 (Alternative): Cancellation
+
+A bounty can be cancelled at any time while it is still `Open`:
+
+- **By the maintainer**: The original funder can cancel and get a full refund.
+- **By the oracle**: The oracle can cancel on behalf of the system.
+
+```solidity
+function cancelBounty(uint256 bountyId) external {
+    require(msg.sender == b.maintainer || msg.sender == owner, "Unauthorized");
+    require(b.status == BountyStatus.Open, "Not open");
+    // ... refunds full amount to maintainer
+}
+```
+
+**On-chain state after cancellation:**
+- Bounty status: `Cancelled`
+- Bounty amount: `0` (ETH refunded to maintainer)
+
+## State Machine Summary
+
+### Bounty States
+
+| State | Description | Transitions |
+|---|---|---|
+| **Open** | Bounty is active, solutions can be submitted | -> Closed (solution accepted), -> Cancelled |
+| **Closed** | A solution was accepted and ETH was paid out | Terminal state |
+| **Cancelled** | Bounty was cancelled and ETH was refunded | Terminal state |
+
+### Solution States
+
+| State | Description | Transitions |
+|---|---|---|
+| **Submitted** | Solution registered, awaiting review | -> Accepted, -> Rejected |
+| **Accepted** | Solution was accepted and contributor was paid | Terminal state |
+| **Rejected** | Solution was rejected (not currently used in automatic flow) | Terminal state |
+
+## Timing
+
+In the demo/development flow, each webhook processing step takes approximately 15 seconds for the webhook to arrive (via smee.io forwarding) and the on-chain transaction to be mined. In production, transaction confirmation time depends on the target chain's block time.

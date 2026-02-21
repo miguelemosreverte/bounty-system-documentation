@@ -1,0 +1,153 @@
+# Architecture Overview
+
+GitBusters consists of four main components connected by a Go backend that acts as an oracle bridge between GitHub and the blockchain.
+
+## System Diagram
+
+```
+                          GitHub
+                      (Issues + PRs)
+                            |
+                            | Webhooks (via smee.io in dev)
+                            v
+                    +----------------+
+                    |  Go Backend    |
+                    |  (Oracle)      |
+                    |                |
+                    |  - Webhook     |
+                    |    handler     |
+                    |  - AI Agents   |
+                    |  - REST API    |
+                    +-------+--------+
+                            |
+              +-------------+-------------+
+              |                           |
+              v                           v
+      +---------------+          +-----------------+
+      | BountyPlatform|          |   Leaderboard   |
+      |   Contract    |          |    Contract      |
+      |               |          |                  |
+      | - Escrow      |          | - Reputation     |
+      | - Solutions   |          | - Scores         |
+      | - Payouts     |          | - Penalties      |
+      +-------+-------+          +--------+---------+
+              |                           |
+              +-------------+-------------+
+                            |
+                            v
+                    +--------------+
+                    |   Anvil      |
+                    | (Local EVM)  |
+                    +--------------+
+                            ^
+                            |
+                    +--------------+
+                    |  Next.js     |
+                    |  Frontend    |
+                    |              |
+                    | - Dashboard  |
+                    | - Bounties   |
+                    | - Leaderboard|
+                    | - Wallet     |
+                    +--------------+
+```
+
+## Component Breakdown
+
+### Smart Contracts (`contracts/`)
+
+Two Solidity contracts deployed via Foundry:
+
+- **BountyPlatform.sol** -- The core escrow contract. Manages bounty creation, solution submission, acceptance (with ETH payout), and cancellation. All state-changing operations (except cancellation by the original maintainer) are restricted to the oracle address.
+- **Leaderboard.sol** -- Tracks reputation scores for contributors and maintainers. Records bounty completions, total payouts, and allows penalty deductions.
+
+Both contracts use an `onlyOwner` modifier where the "owner" is the oracle's address (set at deployment time). This is the trust model: the oracle is the sole entity authorized to write to the contracts based on verified GitHub events.
+
+### Backend (`backend/`)
+
+A Go server built with the [chi](https://github.com/go-chi/chi) router that serves three roles:
+
+1. **REST API** -- Exposes read-only endpoints for the frontend to query bounties, solutions, leaderboard data, and system health.
+2. **Webhook Handler** -- Receives GitHub webhook events, verifies HMAC signatures, and dispatches them to the oracle.
+3. **Oracle** -- The bridge between GitHub and the blockchain. When a webhook arrives, the oracle processes it through AI agents and executes on-chain transactions.
+
+Key packages:
+- `internal/api/` -- HTTP handlers and router setup with CORS for `localhost:3000`
+- `internal/blockchain/` -- Ethereum client, contract bindings, and transaction helpers
+- `internal/oracle/` -- Event processing logic for `issues.labeled`, `pull_request.opened`, `pull_request.closed` (merged)
+- `internal/github/` -- Webhook handler with HMAC verification, GitHub API client, PR body parsing
+- `internal/agents/` -- AI agent interfaces and stub implementations
+- `internal/models/` -- Shared data types (BountyResponse, SolutionResponse, LeaderboardEntry, etc.)
+- `internal/config/` -- Environment variable loading via godotenv
+
+### Frontend (`frontend/`)
+
+A Next.js 14 application with:
+
+- **Dashboard** (`/`) -- Hero section, stats (total bounties, open count, total ETH paid), system status, and recent bounties
+- **Bounties list** (`/bounties`) -- Filterable grid of all bounties (all / open / closed / cancelled)
+- **Bounty detail** (`/bounties/[id]`) -- Full bounty details, complexity bar, "How to Claim" instructions, and list of submitted solutions
+- **Leaderboard** (`/leaderboard`) -- Ranked table of contributors and maintainers by reputation
+
+Web3 integration uses RainbowKit for wallet connection and wagmi v2 for chain interaction, loaded lazily to avoid hydration mismatches.
+
+### Scripts (`scripts/`)
+
+Automation scripts for common workflows:
+
+- `deploy-contracts.sh` -- Deploys both contracts via `forge script`, parses broadcast artifacts, and updates `.env` and `frontend/.env.local`
+- `seed.sh` -- Creates 7 demo bounties with solutions and leaderboard entries using `cast send`
+- `demo.sh` -- Full lifecycle demo: creates a GitHub issue, labels it, opens a PR, merges it, and verifies payout
+- `test-e2e.sh` -- Spins up a fresh Anvil + backend, deploys contracts, and runs Hurl integration tests
+- `generate-bindings.sh` -- Generates Go bindings from contract ABIs
+
+## The Oracle Pattern
+
+The oracle is the central trust component. Here is how it works:
+
+1. **GitHub sends a webhook** to the backend (forwarded via smee.io in development).
+2. The **webhook handler** verifies the HMAC signature using `X-Hub-Signature-256` and the configured `GITHUB_WEBHOOK_SECRET`.
+3. The handler extracts the event type (`X-GitHub-Event` header) and parses the payload.
+4. The **oracle** processes the event through AI agent plugins and executes the appropriate on-chain transactions using the oracle's private key.
+5. The oracle **posts comments** back to GitHub confirming actions taken.
+
+In the current implementation, the Go backend itself is the oracle. For production, this would be replaced by Chainlink or another decentralized oracle network to remove the single point of trust.
+
+## Data Flow for a Bounty Lifecycle
+
+```
+1. Maintainer labels issue "bounty" on GitHub
+   └─> GitHub fires issues.labeled webhook
+       └─> Go backend receives, verifies signature
+           └─> Oracle.onIssueLabeled()
+               ├─> PRD Agent: generates requirements document
+               ├─> Estimator Agent: calculates complexity + bounty amount
+               ├─> QA Agent: generates acceptance criteria
+               ├─> chain.CreateBountyOnChain() -- sends ETH to escrow
+               ├─> chain.UpdateBountyMetadata() -- stores PRD/QA hashes
+               └─> gh.PostComment() -- bounty details on the issue
+
+2. Contributor opens PR referencing the issue
+   └─> GitHub fires pull_request.opened webhook
+       └─> Oracle.onPROpened()
+           ├─> Parses issue number from "Fixes #N"
+           ├─> Parses wallet from "<!-- bounty-wallet: 0x... -->"
+           ├─> chain.SubmitSolutionOnChain() -- registers solution
+           └─> gh.PostComment() -- confirmation on the PR
+
+3. Maintainer merges the PR
+   └─> GitHub fires pull_request.closed (merged=true) webhook
+       └─> Oracle.onPRMerged()
+           ├─> Reviewer Agent: evaluates PR diff against PRD/QA
+           ├─> chain.AcceptSolutionOnChain() -- releases escrow
+           ├─> chain.RecordBountyCompleted() -- updates leaderboard
+           └─> gh.PostComment() -- payout confirmation
+```
+
+## Security Model
+
+- **Contract ownership**: Both contracts are owned by the oracle address. Only the oracle can create bounties, submit solutions, accept solutions, and update the leaderboard.
+- **Cancellation**: A bounty can be cancelled by either the original maintainer or the oracle. The full amount is refunded to the maintainer.
+- **Webhook verification**: All incoming webhooks are verified with HMAC-SHA256 using the configured secret.
+- **Private key management**: The oracle's private key is loaded from environment variables. In production, this should use a hardware security module or key management service.
+- **No re-entrancy risk**: Payouts use a simple `call{value}` pattern with state updated before the external call.
